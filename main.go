@@ -43,14 +43,25 @@ func main() {
 		os.Exit(2)
 	}
 
-	pkgs, err := packages(*owners, owner)
+	pkgs, err := packages(*owners, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	uuid, err := uuidFor(*name, pkgs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	pkgs, err = packages(*owners, owner)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
 	for _, p := range pkgs {
-		tag, ref, err := makeTag(p, *name, *desc, *col)
+		tag, ref, err := makeTag(p, *name, *desc, *col, uuid)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			continue
@@ -62,6 +73,43 @@ func main() {
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 		}
+	}
+}
+
+func uuidFor(name string, pkgs []string) (string, error) {
+	found := make(map[string][]string)
+	for _, path := range pkgs {
+		_, _, tags, err := kibanaPaths(path)
+		if err != nil {
+			return "", err
+		}
+		pkg := filepath.Base(path)
+		for _, p := range tags {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return "", err
+			}
+			var t tag
+			err = json.Unmarshal(b, &t)
+			if err != nil {
+				return "", err
+			}
+			if t.Attributes.Name == name {
+				uuid := strings.TrimPrefix(t.ID, pkg+"-")
+				found[uuid] = append(found[uuid], pkg)
+			}
+		}
+	}
+	switch len(found) {
+	case 0:
+		return uuid.New().String(), nil
+	case 1:
+		for uuid := range found {
+			return uuid, nil
+		}
+		panic("unreachable")
+	default:
+		return "", fmt.Errorf("multiple UUIDs for %s: %v", name, found)
 	}
 }
 
@@ -82,20 +130,19 @@ func packages(owners string, owner *regexp.Regexp) ([]string, error) {
 		if len(fields) < 2 {
 			continue
 		}
-		if owner.Match(bytes.Join(fields[1:], []byte(" "))) {
+		if owner == nil || owner.Match(bytes.Join(fields[1:], []byte(" "))) {
 			pkgs = append(pkgs, base+string(fields[0]))
 		}
 	}
 	return pkgs, sc.Err()
 }
 
-func makeTag(path, name, desc, colour string) (*tag, *reference, error) {
+func makeTag(path, name, desc, colour, uuid string) (*tag, *reference, error) {
 	_, dashboards, tags, err := kibanaPaths(path)
 	if err != nil || len(dashboards) == 0 {
 		return nil, nil, err
 	}
 	pkg := filepath.Base(path)
-	uuid := uuid.New().String()
 
 	for _, p := range tags {
 		b, err := os.ReadFile(p)
